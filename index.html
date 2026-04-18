@@ -444,6 +444,8 @@
             var alices_destination = prompt( `enter a bitcoin address where Alice wants to send the money if she ends up winning` );
             var bobs_destination = prompt( `enter a bitcoin address where Bob wants to send the money if he ends up winning` );
             var settlement_timestamp = fallback_oracle[ "state" ][ "contract" ][ 2 ][ 3 ];
+            //TODO: uncomment the line below this one and delete the line after it
+            // var backout_timestamp = settlement_timestamp + ( 60 * 90 );
             var backout_timestamp = settlement_timestamp + 15;
             var txfee = 500;
             var tx = tapscript.Tx.create({
