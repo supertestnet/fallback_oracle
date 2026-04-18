@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, user-scalable=no">
+        <title>Fallback oracle</title>
+        <script src="https://bundle.run/noble-secp256k1@1.2.14"></script>
+        <!-- <script src="file:///home/supertestnet/bitcoin_projects/testnet_generator/noble-secp256k1@1.2.14"></script> -->
+        <script src="https://unpkg.com/@cmdcode/tapscript@1.5.3"></script>
+        <!-- <script src="file:///home/supertestnet/bitcoin_projects/testnet_generator/tapscript@1.5.3"></script> -->
+        <script>
+            var fallback_oracle = {
+                state: {},
+                hexToBytes: hex => Uint8Array.from( hex.match( /.{1,2}/g ).map( byte => parseInt( byte, 16 ) ) ),
+                bytesToHex: bytes => bytes.reduce( ( str, byte ) => str + byte.toString( 16 ).padStart( 2, "0" ), "" ),
+                getPrivkey: () => fallback_oracle.bytesToHex( crypto.getRandomValues( new Uint8Array( 32 ) ) ),
+                getPubkey: privkey => nobleSecp256k1.getPublicKey( privkey, true ),
+                add2Pubkeys: ( pubkey1, pubkey2 ) => nobleSecp256k1.Point.fromHex( pubkey1 ).add( nobleSecp256k1.Point.fromHex( pubkey2 ) ).toHex( true ),
+                sha256: async s => {
+                    if ( typeof s == "string" ) s = new TextEncoder().encode( s );
+                    var arr = await crypto.subtle.digest( 'SHA-256', s );
+                    return fallback_oracle.bytesToHex( new Uint8Array( arr ) );
+                },
+                add2Privkeys: ( privkey1, privkey2 ) => {
+                    //Topher said the field order is nobleSecp256k1.CURVE.n and that’s what I need in my modulus, not the curve order, which is nobleSecp256k1.CURVE.P
+                    var combokey = ( ( BigInt( "0x" + privkey1 ) + BigInt( "0x" + privkey2 ) ) % nobleSecp256k1.CURVE.n ).toString( 16 );
+                    var padding = "0".repeat( 64 );
+                    padding = padding + combokey;
+                    combokey = padding.slice( -64 );
+                    return combokey;
+                },
+                getMerkleRootFromControlBlockAndScript: ( cblock, script ) => {
+                    var hexToBytes = fallback_oracle.hexToBytes;
+                    var bytesToHex = fallback_oracle.bytesToHex;
+                    cblock = hexToBytes( cblock );
+
+                    // Parse the control block
+                    var ctrl = tapscript.Tap.util.readCtrlBlock( cblock );
+                    var { version, parity, intkey, paths } = ctrl;
+                    var sibling_paths = paths.map( p => hexToBytes( p ) );
+
+                    if ( sibling_paths.length === 0 ) {
+                        // Single-leaf tree: root = leaf hash
+                        var tapleaf = tapscript.Tap.encodeScript( script, version );
+                        var merkle_root = hexToBytes( tapleaf );
+                        // Proceed to tweak...
+                    } else {
+                        // Compute tapleaf hash
+                        var tapleaf_bytes = hexToBytes( tapscript.Tap.encodeScript( script, version ) );
+
+                        // Manual root reconstruction: leaf-to-root traversal using parity for path decisions
+                        var current = tapleaf_bytes;
+                        var num_of_levels = sibling_paths.length;
+                        var path_bit = parity;  // Start with leaf-level parity (0: left/even child, 1: right/odd child)
+
+                        // Process siblings from leaf-to-root (reverse the root-to-leaf order)
+                        sibling_paths.reverse();
+                        for (var i = num_of_levels - 1; i >= 0; i--) {
+                            var sibling = sibling_paths[ i ];
+                            var is_left_child = ( path_bit === 0 );  // If even (0), current was left child
+
+                            // BIP-341: hash(left, right) with lexical sort
+                            var left, right;
+                            if ( is_left_child ) {
+                                left = current;
+                                right = sibling;
+                            } else {
+                                left = sibling;
+                                right = current;
+                            }
+
+                            // Combine: double-SHA256(tagged "TapBranch", left || right)
+                            left = bytesToHex( left );
+                            right = bytesToHex( right );
+                            current = hexToBytes( tapscript.Tap.tree.getBranch( left, right ) );
+
+                            // For next level: invert the bit (child's position flips parity in parent)
+                            path_bit = 1 - path_bit;
+                        }
+
+                        var merkle_root = current;
+                    }
+
+                    return bytesToHex( merkle_root );
+                }
+            }
+        </script>
+        <style>
+            * {
+                box-sizing: border-box;
+                font-size: 1.15rem;
+                font-family: Arial, sans-serif;
+            }
+            html {
+                max-width: 800px;
+                padding: 3rem 1rem;
+                margin: auto;
+                line-height: 1.25;
+                padding: 0;
+            }
+            body {
+                margin: 3rem 1rem;
+                word-wrap: break-word;
+            }
+            h1 {
+                font-size: 2rem;
+            }
+            h2 {
+                font-size: 1.5rem;
+            }
+            input {
+                line-height: 1.25;
+                width: 100%;
+                height: 1.8rem;
+                font-size: 1.15rem;
+                border: 1px solid grey;
+            }
+            .hidden {
+                display: none !important;
+            }
+            .outcome {
+                background-color: #cccccc;
+                padding: 1rem;
+                border: 1px solid black;
+            }
+            @media screen and (max-width: 600px) {
+            }
+        </style>
+        <script>
+            var $ = document.querySelector.bind( document );
+            var $$ = document.querySelectorAll.bind( document );
+            var url_params = new URLSearchParams( window.location.search );
+            var url_keys = url_params.keys();
+            var $_GET = {}
+            for ( var key of url_keys ) $_GET[ key ] = url_params.get( key );
+            var hash_arr = window.location.href.substring( window.location.href.indexOf( "#" ) ).split( "#" );
+            hash_arr.splice( 0, 1 );
+            var $_HASH = {}
+            hash_arr.forEach( item => {
+                var vals = item.split( "=" );
+                $_HASH[ vals[ 0 ] ] = vals[ 1 ];
+            });
+        </script>
+    </head>
+    <body>
+        <div class="webpage home_page">
+            <h1>Fallback oracle</h1>
+            <p>On this page, you can create and execute a bitcoin smart contract with the following properties:</p>
+            <ul>
+                <li>The smart contract will be between two parties, Alice and Bob</li>
+                <li>They will be betting on the outcome of some future event</li>
+                <li>10 oracles will adjudicate the bet by saying Yes if the future event happened or No otherwise</li>
+                <li>If Alice and Bob agree on the outcome, the loser sends their private key to the winner, and the winner sweeps the funds immediately, without needing information from the oracles</li>
+                <li>If they disagree on the outcome, the winner can sweep the funds immediately using a simple majority vote from the oracles: Alice can sweep if 6 out of 10 oracles said Yes, and Bob can sweep if 6 out of 10 oracles said No</li>
+                <li>If most of the oracles went down, the winner can wait a week and then withdraw as long as just 1 oracle spoke up and no other oracle disagreed</li>
+                <li>If all of the oracles went down, either party can wait a week plus 90 minutes and then divide up the funds 50/50 between one another</li>
+            </ul>
+            <p><button class="get_started_btn">Get started</button></p>
+        </div>
+        <div class="webpage prepare_actors_page hidden">
+            <h1>Prepare actors</h1>
+            <p><button class="make_alice">Make Alice</button> <span class="alice_ready"></span></p>
+            <p><button class="make_bob">Make Bob</button> <span class="bob_ready"></span></p>
+            <p><button class="make_oracles">Make 10 oracles</button> <span class="oracles_ready"></span></p>
+            <p><button class="first_next_btn" disabled>Next</button></p>
+        </div>
+        <div class="webpage make_contract_page hidden">
+            <h1>Make the smart contract</h1>
+            <p><button class="make_contract">Make smart contract</button></p>
+            <p>Smart contract address:</p>
+            <p class="sc_address">[None yet]</p>
+            <p><button class="second_next_btn" disabled>Next</button></p>
+        </div>
+        <div class="webpage fund_contract_page hidden">
+            <h1>Fund the smart contract</h1>
+            <p>Smart contract address:</p>
+            <p class="sc_address"></p>
+            <p><button class="enter_tx_details">Enter tx details</button> <span class="details_entered"></span></p>
+            <p><button class="third_next_btn" disabled>Next</button></p>
+        </div>
+        <div class="webpage pick_spend_path_page hidden">
+            <h1>Pick your spend path</h1>
+            <p><button class="alice_wins_bob_agrees">Alice wins, Bob agrees</button></p>
+            <p><button class="bob_wins_alice_agrees">Bob wins, Alice agrees</button></p>
+            <p><button class="alice_wins_by_majority">Alice wins by oracle vote</button></p>
+            <p><button class="bob_wins_by_majority">Bob wins by oracle vote</button></p>
+            <p><button class="alice_wins_bob_disappeared">Alice wins, Bob disappeared</button></p>
+            <p><button class="bob_wins_alice_disappeared">Bob wins, Alice disappeared</button></p>
+            <p><button class="oracles_disappeared">The oracles all disappeared</button></p>
+            <p>Outcome:</p>
+            <p class="outcome">[None yet]</p>
+        </div>
+    </body>
+    <script>
+        $( '.first_next_btn' ).disabled = true;
+        $( '.second_next_btn' ).disabled = true;
+        $( '.third_next_btn' ).disabled = true;
+        var showPage = page => {
+            $$( '.webpage' ).forEach( item => item.classList.add( "hidden" ) );
+            $( `.${page}` ).classList.remove( "hidden" );
+        }
+        $( '.get_started_btn' ).onclick = () => showPage( 'prepare_actors_page' );
+        $( '.make_alice' ).onclick = () => {
+            fallback_oracle[ "state" ][ "alices_privkey" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "alices_pubkey" ] = fallback_oracle.getPubkey( fallback_oracle[ "state" ][ "alices_privkey" ] );
+            $( '.alice_ready' ).innerText = '✅';
+            if ( fallback_oracle[ "state" ][ "bobs_pubkey" ] && fallback_oracle[ "state" ][ "oracles_ready" ] ) $( '.first_next_btn' ).disabled = false;
+        }
+        $( '.make_bob' ).onclick = () => {
+            fallback_oracle[ "state" ][ "bobs_privkey" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "bobs_pubkey" ] = fallback_oracle.getPubkey( fallback_oracle[ "state" ][ "bobs_privkey" ] );
+            $( '.bob_ready' ).innerText = '✅';
+            if ( fallback_oracle[ "state" ][ "alices_pubkey" ] && fallback_oracle[ "state" ][ "oracles_ready" ] ) $( '.first_next_btn' ).disabled = false;
+        }
+        $( '.make_oracles' ).onclick = async () => {
+            fallback_oracle[ "state" ][ "oracle_0_yes_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_1_yes_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_2_yes_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_3_yes_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_4_yes_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_5_yes_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_6_yes_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_7_yes_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_8_yes_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_9_yes_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_0_no_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_1_no_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_2_no_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_3_no_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_4_no_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_5_no_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_6_no_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_7_no_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_8_no_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_9_no_preimage" ] = fallback_oracle.getPrivkey();
+            fallback_oracle[ "state" ][ "oracle_0_yes_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_0_yes_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_1_yes_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_1_yes_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_2_yes_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_2_yes_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_3_yes_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_3_yes_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_4_yes_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_4_yes_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_5_yes_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_5_yes_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_6_yes_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_6_yes_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_7_yes_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_7_yes_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_8_yes_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_8_yes_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_9_yes_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_9_yes_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_0_no_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_0_no_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_1_no_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_1_no_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_2_no_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_2_no_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_3_no_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_3_no_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_4_no_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_4_no_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_5_no_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_5_no_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_6_no_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_6_no_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_7_no_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_7_no_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_8_no_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_8_no_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracle_9_no_hash" ] = await fallback_oracle.sha256( fallback_oracle.hexToBytes( fallback_oracle[ "state" ][ "oracle_9_no_preimage" ] ) );
+            fallback_oracle[ "state" ][ "oracles_ready" ] = true;
+            $( '.oracles_ready' ).innerText = '✅';
+            if ( fallback_oracle[ "state" ][ "alices_pubkey" ] && fallback_oracle[ "state" ][ "bobs_pubkey" ] ) $( '.first_next_btn' ).disabled = false;
+        }
+        $( '.first_next_btn' ).onclick = () => showPage( 'make_contract_page' );
+        $( '.make_contract' ).onclick = () => {
+            //prepare the requisite variables
+            var backup_pubkey = fallback_oracle.add2Pubkeys( fallback_oracle[ "state" ][ "alices_pubkey" ], fallback_oracle[ "state" ][ "bobs_pubkey" ] );
+            var contract = [];
+
+            //allow Alice to spend with a majority of yes secrets
+            contract.push([
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_0_yes_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_1_yes_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_2_yes_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_3_yes_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_4_yes_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_5_yes_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_6_yes_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_7_yes_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_8_yes_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_9_yes_hash` ],
+                "OP_EQUAL",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_6",
+                "OP_GREATERTHANOREQUAL",
+                "OP_VERIFY",
+                fallback_oracle[ "state" ][ "alices_pubkey" ].substring( 2 ),
+                "OP_CHECKSIG",
+            ]);
+            
+            //allow Bob to spend with a majority of no secrets
+            contract.push([
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_0_no_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_1_no_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_2_no_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_3_no_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_4_no_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_5_no_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_6_no_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_7_no_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_8_no_hash` ],
+                "OP_EQUAL",
+                "OP_TOALTSTACK",
+                "OP_SHA256",
+                fallback_oracle[ "state" ][ `oracle_9_no_hash` ],
+                "OP_EQUAL",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                "OP_FROMALTSTACK",
+                "OP_ADD",
+                6,
+                "OP_GREATERTHANOREQUAL",
+                "OP_VERIFY",
+                fallback_oracle[ "state" ][ "bobs_pubkey" ].substring( 2 ),
+                "OP_CHECKSIG",
+            ]);
+
+            //allow Alice or Bob to spend with a single yes or no secret after a week goes by
+            //TODO: uncomment the line below this one and delete the line after it
+            // var settlement_timestamp = Math.floor( Date.now() / 1000 ) + ( 7 * 60 * 60 * 24 );
+            var settlement_timestamp = Math.floor( Date.now() / 1000 ) + 120;
+            var i; for ( i=0; i<10; i++ ) {
+                contract.push([ "OP_SHA256", fallback_oracle[ "state" ][ `oracle_${i}_yes_hash` ], "OP_EQUALVERIFY", settlement_timestamp, "OP_CHECKLOCKTIMEVERIFY", "OP_DROP", fallback_oracle[ "state" ][ "alices_pubkey" ].substring( 2 ), "OP_CHECKSIG" ]);
+                contract.push([ "OP_SHA256", fallback_oracle[ "state" ][ `oracle_${i}_no_hash` ], "OP_EQUALVERIFY", settlement_timestamp, "OP_CHECKLOCKTIMEVERIFY", "OP_DROP", fallback_oracle[ "state" ][ "bobs_pubkey" ].substring( 2 ), "OP_CHECKSIG" ]);
+            }
+
+            //allow Alice and Bob's presigned backout path, for use if all of the oracles disappear
+            contract.push([
+                fallback_oracle[ "state" ][ "alices_pubkey" ].substring( 2 ),
+                "OP_CHECKSIGVERIFY",
+                fallback_oracle[ "state" ][ "bobs_pubkey" ].substring( 2 ),
+                "OP_CHECKSIG",
+            ]);
+
+            //save the data
+            fallback_oracle[ "state" ][ "contract" ] = contract;
+            var tree = contract.map( e => tapscript.Tap.encodeScript( e ) );
+            var [ tpubkey ] = tapscript.Tap.getPubKey( backup_pubkey.substring( 2 ), { tree });
+            var sc_address = tapscript.Address.p2tr.fromPubKey( tpubkey, 'testnet' );
+            fallback_oracle[ "state" ][ "sc_address" ] = sc_address;
+            $$( '.sc_address' ).forEach( item => item.innerText = sc_address );
+            $( '.second_next_btn' ).disabled = false;
+        }
+        $( '.second_next_btn' ).onclick = () => showPage( 'fund_contract_page' );
+        $( '.enter_tx_details' ).onclick = () => {
+            var conf = confirm( `Send 10,000 sats to the smart contract address, then click ok. (If you can't see the address anymore and need to see it to copy it, click cancel, it's safe.)` );
+            if ( !conf ) return;
+            var txid = prompt( `enter the txid of the tx where you sent money to the address` );
+            var vout = Number( prompt( `and the vout` ) );
+            var amnt = Number( prompt( `and the amnt` ) );
+            fallback_oracle[ "state" ][ "funding_utxo" ] = {txid, vout, amnt}
+            $( '.details_entered' ).innerText = '✅';
+            $( '.third_next_btn' ).disabled = false;
+
+            //prepare the presigned backout tx
+            var contract = fallback_oracle[ "state" ][ "contract" ];
+            var sc_address = fallback_oracle[ "state" ][ "sc_address" ];
+            var backup_pubkey = fallback_oracle.add2Pubkeys( fallback_oracle[ "state" ][ "alices_pubkey" ], fallback_oracle[ "state" ][ "bobs_pubkey" ] );
+            var leaf = contract.length - 1;
+            var script = contract[ leaf ];
+            var tree = contract.map( e => tapscript.Tap.encodeScript( e ) );
+            var [ tpubkey, cblock ] = tapscript.Tap.getPubKey( backup_pubkey.substring( 2 ), { tree, target: tree[ leaf ] });
+            var alices_destination = prompt( `enter a bitcoin address where Alice wants to send the money if she ends up winning` );
+            var bobs_destination = prompt( `enter a bitcoin address where Bob wants to send the money if he ends up winning` );
+            var settlement_timestamp = fallback_oracle[ "state" ][ "contract" ][ 2 ][ 3 ];
+            var backout_timestamp = settlement_timestamp + 15;
+            var txfee = 500;
+            var tx = tapscript.Tx.create({
+                vin: [{
+                    txid: fallback_oracle[ "state" ][ "funding_utxo" ][ "txid" ],
+                    vout: fallback_oracle[ "state" ][ "funding_utxo" ][ "vout" ],
+                    prevout: {
+                        value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ],
+                        scriptPubKey: tapscript.Address.toScriptPubKey( sc_address ),
+                    },
+                }],
+                vout: [{
+                    value: Math.floor( ( fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ] - txfee ) / 2 ),
+                    scriptPubKey: tapscript.Address.toScriptPubKey( alices_destination ),
+                },{
+                    value: Math.floor( ( fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ] - txfee ) / 2 ),
+                    scriptPubKey: tapscript.Address.toScriptPubKey( bobs_destination ),
+                }],
+                locktime: backout_timestamp,
+            });
+            var sig_1 = tapscript.Signer.taproot.sign( fallback_oracle[ "state" ][ "alices_privkey" ], tx, 0, {extension: tree[ leaf ]} ).hex;
+            var sig_2 = tapscript.Signer.taproot.sign( fallback_oracle[ "state" ][ "bobs_privkey" ], tx, 0, {extension: tree[ leaf ]} ).hex;
+            tx.vin[ 0 ].witness = [ sig_2, sig_1, script, cblock ];
+            var backout_txhex = tapscript.Tx.encode( tx ).hex;
+            fallback_oracle[ "state" ][ "backout_txhex" ] = backout_txhex;
+        }
+        $( '.third_next_btn' ).onclick = () => showPage( 'pick_spend_path_page' );
+        $( '.alice_wins_bob_agrees' ).onclick = () => {
+            var leaf = 0;
+            var alices_privkey = fallback_oracle[ "state" ][ "alices_privkey" ];
+            var bobs_privkey = fallback_oracle[ "state" ][ "bobs_privkey" ];
+            var backup_privkey = fallback_oracle.add2Privkeys( alices_privkey, bobs_privkey );
+            var backup_pubkey = fallback_oracle.add2Pubkeys( fallback_oracle[ "state" ][ "alices_pubkey" ], fallback_oracle[ "state" ][ "bobs_pubkey" ] );
+            var contract = fallback_oracle[ "state" ][ "contract" ];
+            var tree = contract.map( e => tapscript.Tap.encodeScript( e ) );
+            var [ _, cblock ] = tapscript.Tap.getPubKey( backup_pubkey.substring( 2 ), { tree, target: tree[ leaf ] });
+            var script = contract[ leaf ];
+            var merkle_root = fallback_oracle.getMerkleRootFromControlBlockAndScript( cblock, script );
+            var intkey = fallback_oracle.hexToBytes( backup_pubkey.substring( 2 ) );
+            var tap_tweak = tapscript.Tap.tweak.getTweak( intkey, fallback_oracle.hexToBytes( merkle_root ) );
+            var combo_privkey = fallback_oracle.bytesToHex( tapscript.Tap.tweak.tweakSecKey( backup_privkey, tap_tweak ) );
+            var combo_pubkey = fallback_oracle.bytesToHex( tapscript.Tap.tweak.tweakPubKey( backup_pubkey.substring( 2 ), tap_tweak ) ).substring( 2 );
+            var sc_address = fallback_oracle[ "state" ][ "sc_address" ];
+            var txfee = 500;
+            var destination = prompt( `enter a bitcoin address where Alice wants to send the money` );
+            var tx = tapscript.Tx.create({
+                vin: [{
+                    txid: fallback_oracle[ "state" ][ "funding_utxo" ][ "txid" ],
+                    vout: fallback_oracle[ "state" ][ "funding_utxo" ][ "vout" ],
+                    prevout: {
+                        value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ],
+                        scriptPubKey: tapscript.Address.toScriptPubKey( sc_address ),
+                    },
+                }],
+                vout: [{
+                    value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ] - txfee,
+                    scriptPubKey: tapscript.Address.toScriptPubKey( destination ),
+                }],
+            });
+            var sig = tapscript.Signer.taproot.sign( combo_privkey, tx, 0 ).hex;
+            tx.vin[ 0 ].witness = [ sig ];
+            var txhex = tapscript.Tx.encode( tx ).hex;
+            $( '.outcome' ).innerText = `
+                This is Alice's privkey: ${alices_privkey}
+                \n
+                Bob sends her his privkey: ${bobs_privkey}
+                \n
+                Alice combines it with her privkey to form the "backup privkey": ${backup_privkey}
+                \n
+                Then she gets the merkle root of the smart contract's merkle tree: ${merkle_root}
+                \n
+                She combines the merkle root with the backup privkey: ${combo_privkey}
+                \n
+                Which corresponds to this pubkey: ${combo_pubkey}
+                \n
+                Which corresponds to the smart contract: ${sc_address}
+                \n
+                Alice therefore prepares her transaction: ${txhex}
+                \n
+                Now go broadcast it
+            `;
+        }
+        $( '.bob_wins_alice_agrees' ).onclick = () => {
+            var leaf = 1;
+            var alices_privkey = fallback_oracle[ "state" ][ "alices_privkey" ];
+            var bobs_privkey = fallback_oracle[ "state" ][ "bobs_privkey" ];
+            var backup_privkey = fallback_oracle.add2Privkeys( alices_privkey, bobs_privkey );
+            var backup_pubkey = fallback_oracle.add2Pubkeys( fallback_oracle[ "state" ][ "alices_pubkey" ], fallback_oracle[ "state" ][ "bobs_pubkey" ] );
+            var contract = fallback_oracle[ "state" ][ "contract" ];
+            var tree = contract.map( e => tapscript.Tap.encodeScript( e ) );
+            var [ _, cblock ] = tapscript.Tap.getPubKey( backup_pubkey.substring( 2 ), { tree, target: tree[ leaf ] });
+            var script = contract[ leaf ];
+            var merkle_root = fallback_oracle.getMerkleRootFromControlBlockAndScript( cblock, script );
+            var intkey = fallback_oracle.hexToBytes( backup_pubkey.substring( 2 ) );
+            var tap_tweak = tapscript.Tap.tweak.getTweak( intkey, fallback_oracle.hexToBytes( merkle_root ) );
+            var combo_privkey = fallback_oracle.bytesToHex( tapscript.Tap.tweak.tweakSecKey( backup_privkey, tap_tweak ) );
+            var combo_pubkey = fallback_oracle.bytesToHex( tapscript.Tap.tweak.tweakPubKey( backup_pubkey.substring( 2 ), tap_tweak ) ).substring( 2 );
+            var sc_address = fallback_oracle[ "state" ][ "sc_address" ];
+            var txfee = 500;
+            var destination = prompt( `enter a bitcoin address where Bob wants to send the money` );
+            var tx = tapscript.Tx.create({
+                vin: [{
+                    txid: fallback_oracle[ "state" ][ "funding_utxo" ][ "txid" ],
+                    vout: fallback_oracle[ "state" ][ "funding_utxo" ][ "vout" ],
+                    prevout: {
+                        value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ],
+                        scriptPubKey: tapscript.Address.toScriptPubKey( sc_address ),
+                    },
+                }],
+                vout: [{
+                    value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ] - txfee,
+                    scriptPubKey: tapscript.Address.toScriptPubKey( destination ),
+                }],
+            });
+            var sig = tapscript.Signer.taproot.sign( combo_privkey, tx, 0 ).hex;
+            tx.vin[ 0 ].witness = [ sig ];
+            var txhex = tapscript.Tx.encode( tx ).hex;
+            $( '.outcome' ).innerText = `
+                This is Bob's privkey: ${bobs_privkey}
+                \n
+                Alice sends him her privkey: ${alices_privkey}
+                \n
+                Bob combines it with his privkey to form the "backup privkey": ${backup_privkey}
+                \n
+                Then he gets the merkle root of the smart contract's merkle tree: ${merkle_root}
+                \n
+                He combines the merkle root with the backup privkey: ${combo_privkey}
+                \n
+                Which corresponds to this pubkey: ${combo_pubkey}
+                \n
+                Which corresponds to the smart contract: ${sc_address}
+                \n
+                Bob therefore prepares his transaction: ${txhex}
+                \n
+                Now go broadcast it
+            `;
+        }
+        $( '.alice_wins_by_majority' ).onclick = () => {
+            var leaf = 0;
+            var alices_privkey = fallback_oracle[ "state" ][ "alices_privkey" ];
+            var backup_pubkey = fallback_oracle.add2Pubkeys( fallback_oracle[ "state" ][ "alices_pubkey" ], fallback_oracle[ "state" ][ "bobs_pubkey" ] );
+            var contract = fallback_oracle[ "state" ][ "contract" ];
+            var tree = contract.map( e => tapscript.Tap.encodeScript( e ) );
+            var [ _, cblock ] = tapscript.Tap.getPubKey( backup_pubkey.substring( 2 ), { tree, target: tree[ leaf ] });
+            var script = contract[ leaf ];
+            var txfee = 500;
+            var destination = prompt( `enter a bitcoin address where Alice wants to send the money` );
+            var tx = tapscript.Tx.create({
+                vin: [{
+                    txid: fallback_oracle[ "state" ][ "funding_utxo" ][ "txid" ],
+                    vout: fallback_oracle[ "state" ][ "funding_utxo" ][ "vout" ],
+                    prevout: {
+                        value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ],
+                        scriptPubKey: tapscript.Address.toScriptPubKey( fallback_oracle[ "state" ][ "sc_address" ] ),
+                    },
+                }],
+                vout: [{
+                    value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ] - txfee,
+                    scriptPubKey: tapscript.Address.toScriptPubKey( destination ),
+                }],
+            });
+            var sig = tapscript.Signer.taproot.sign( alices_privkey, tx, 0, {extension: tree[ leaf ]} ).hex;
+            var preimages = [];
+            var i; for ( i=0; i<6; i++ ) preimages.push( fallback_oracle[ "state" ][ `oracle_${i}_yes_preimage` ] );
+            var i; for ( i=0; i<4; i++ ) preimages.push( "" );
+            preimages.reverse();
+            tx.vin[ 0 ].witness = [ sig, ...preimages, script, cblock ];
+            var txhex = tapscript.Tx.encode( tx ).hex;
+            preimages.reverse();
+            $( '.outcome' ).innerText = `
+                This is Alice's privkey: ${alices_privkey}
+                \n
+                She gets 6 Yes preimages. The first: ${preimages[ 0 ]}
+                \n
+                The second: ${preimages[ 1 ]}
+                \n
+                The third: ${preimages[ 2 ]}
+                \n
+                The fourth: ${preimages[ 3 ]}
+                \n
+                The fifth: ${preimages[ 4 ]}
+                \n
+                The sixth: ${preimages[ 5 ]}
+                \n
+                Then Alice prepares her transaction: ${txhex}
+                \n
+                Now go broadcast it
+            `;
+        }
+        $( '.bob_wins_by_majority' ).onclick = () => {
+            var leaf = 1;
+            var bobs_privkey = fallback_oracle[ "state" ][ "bobs_privkey" ];
+            var backup_pubkey = fallback_oracle.add2Pubkeys( fallback_oracle[ "state" ][ "alices_pubkey" ], fallback_oracle[ "state" ][ "bobs_pubkey" ] );
+            var contract = fallback_oracle[ "state" ][ "contract" ];
+            var tree = contract.map( e => tapscript.Tap.encodeScript( e ) );
+            var [ _, cblock ] = tapscript.Tap.getPubKey( backup_pubkey.substring( 2 ), { tree, target: tree[ leaf ] });
+            var script = contract[ leaf ];
+            var txfee = 500;
+            var destination = prompt( `enter a bitcoin address where Bob wants to send the money` );
+            var tx = tapscript.Tx.create({
+                vin: [{
+                    txid: fallback_oracle[ "state" ][ "funding_utxo" ][ "txid" ],
+                    vout: fallback_oracle[ "state" ][ "funding_utxo" ][ "vout" ],
+                    prevout: {
+                        value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ],
+                        scriptPubKey: tapscript.Address.toScriptPubKey( fallback_oracle[ "state" ][ "sc_address" ] ),
+                    },
+                }],
+                vout: [{
+                    value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ] - txfee,
+                    scriptPubKey: tapscript.Address.toScriptPubKey( destination ),
+                }],
+            });
+            var sig = tapscript.Signer.taproot.sign( bobs_privkey, tx, 0, {extension: tree[ leaf ]} ).hex;
+            var preimages = [];
+            var i; for ( i=0; i<6; i++ ) preimages.push( fallback_oracle[ "state" ][ `oracle_${i}_no_preimage` ] );
+            var i; for ( i=0; i<4; i++ ) preimages.push( "" );
+            preimages.reverse();
+            tx.vin[ 0 ].witness = [ sig, ...preimages, script, cblock ];
+            var txhex = tapscript.Tx.encode( tx ).hex;
+            preimages.reverse();
+            $( '.outcome' ).innerText = `
+                This is Bob's privkey: ${bobs_privkey}
+                \n
+                He gets 6 Yes preimages. The first: ${preimages[ 0 ]}
+                \n
+                The second: ${preimages[ 1 ]}
+                \n
+                The third: ${preimages[ 2 ]}
+                \n
+                The fourth: ${preimages[ 3 ]}
+                \n
+                The fifth: ${preimages[ 4 ]}
+                \n
+                The sixth: ${preimages[ 5 ]}
+                \n
+                Then Bob prepares his transaction: ${txhex}
+                \n
+                Now go broadcast it
+            `;
+        }
+        $( '.alice_wins_bob_disappeared' ).onclick = () => {
+            var preimage_to_get = 0;
+            var leaf = preimage_to_get + 2;
+            var alices_privkey = fallback_oracle[ "state" ][ "alices_privkey" ];
+            var backup_pubkey = fallback_oracle.add2Pubkeys( fallback_oracle[ "state" ][ "alices_pubkey" ], fallback_oracle[ "state" ][ "bobs_pubkey" ] );
+            var contract = fallback_oracle[ "state" ][ "contract" ];
+            var tree = contract.map( e => tapscript.Tap.encodeScript( e ) );
+            var [ _, cblock ] = tapscript.Tap.getPubKey( backup_pubkey.substring( 2 ), { tree, target: tree[ leaf ] });
+            var script = contract[ leaf ];
+            var txfee = 500;
+            var destination = prompt( `enter a bitcoin address where Alice wants to send the money` );
+            var tx = tapscript.Tx.create({
+                vin: [{
+                    txid: fallback_oracle[ "state" ][ "funding_utxo" ][ "txid" ],
+                    vout: fallback_oracle[ "state" ][ "funding_utxo" ][ "vout" ],
+                    prevout: {
+                        value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ],
+                        scriptPubKey: tapscript.Address.toScriptPubKey( fallback_oracle[ "state" ][ "sc_address" ] ),
+                    },
+                }],
+                vout: [{
+                    value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ] - txfee,
+                    scriptPubKey: tapscript.Address.toScriptPubKey( destination ),
+                }],
+                locktime: fallback_oracle[ "state" ][ "contract" ][ leaf ][ 3 ],
+            });
+            var sig = tapscript.Signer.taproot.sign( alices_privkey, tx, 0, {extension: tree[ leaf ]} ).hex;
+            var preimage = fallback_oracle[ "state" ][ `oracle_${preimage_to_get}_yes_preimage` ];
+            tx.vin[ 0 ].witness = [ sig, preimage, script, cblock ];
+            var txhex = tapscript.Tx.encode( tx ).hex;
+            $( '.outcome' ).innerText = `
+                This is Alice's privkey: ${alices_privkey}
+                \n
+                She gets a Yes preimage. This one: ${preimage}
+                \n
+                Then Alice prepares her transaction: ${txhex}
+                \n
+                Now go broadcast it after enough time has elapsed
+            `;
+        }
+        $( '.bob_wins_alice_disappeared' ).onclick = () => {
+            var preimage_to_get = 0;
+            var leaf = preimage_to_get + 3;
+            var bobs_privkey = fallback_oracle[ "state" ][ "bobs_privkey" ];
+            var backup_pubkey = fallback_oracle.add2Pubkeys( fallback_oracle[ "state" ][ "alices_pubkey" ], fallback_oracle[ "state" ][ "bobs_pubkey" ] );
+            var contract = fallback_oracle[ "state" ][ "contract" ];
+            var tree = contract.map( e => tapscript.Tap.encodeScript( e ) );
+            var [ _, cblock ] = tapscript.Tap.getPubKey( backup_pubkey.substring( 2 ), { tree, target: tree[ leaf ] });
+            var script = contract[ leaf ];
+            var txfee = 500;
+            var destination = prompt( `enter a bitcoin address where Bob wants to send the money` );
+            var tx = tapscript.Tx.create({
+                vin: [{
+                    txid: fallback_oracle[ "state" ][ "funding_utxo" ][ "txid" ],
+                    vout: fallback_oracle[ "state" ][ "funding_utxo" ][ "vout" ],
+                    prevout: {
+                        value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ],
+                        scriptPubKey: tapscript.Address.toScriptPubKey( fallback_oracle[ "state" ][ "sc_address" ] ),
+                    },
+                }],
+                vout: [{
+                    value: fallback_oracle[ "state" ][ "funding_utxo" ][ "amnt" ] - txfee,
+                    scriptPubKey: tapscript.Address.toScriptPubKey( destination ),
+                }],
+                locktime: fallback_oracle[ "state" ][ "contract" ][ leaf ][ 3 ],
+            });
+            var sig = tapscript.Signer.taproot.sign( bobs_privkey, tx, 0, {extension: tree[ leaf ]} ).hex;
+            var preimage = fallback_oracle[ "state" ][ `oracle_${preimage_to_get}_no_preimage` ];
+            tx.vin[ 0 ].witness = [ sig, preimage, script, cblock ];
+            var txhex = tapscript.Tx.encode( tx ).hex;
+            $( '.outcome' ).innerText = `
+                This is Bob's privkey: ${bobs_privkey}
+                \n
+                He gets a No preimage. This one: ${preimage}
+                \n
+                Then Bob prepares his transaction: ${txhex}
+                \n
+                Now go broadcast it after enough time has elapsed
+            `;
+        }
+        $( '.oracles_disappeared' ).onclick = () => {
+            var txhex = fallback_oracle[ "state" ][ "backout_txhex" ];
+            $( '.outcome' ).innerText = `
+                This is the backout tx: ${txhex}
+                \n
+                Now go broadcast it after enough time has elapsed
+            `;
+        }
+    </script>
+</html>
