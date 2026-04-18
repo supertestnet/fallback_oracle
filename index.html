@@ -508,21 +508,21 @@
             var txhex = tapscript.Tx.encode( tx ).hex;
             $( '.outcome' ).innerText = `
                 This is Alice's privkey: ${alices_privkey}
-                \n
+                
                 Bob sends her his privkey: ${bobs_privkey}
-                \n
+                
                 Alice combines it with her privkey to form the "backup privkey": ${backup_privkey}
-                \n
+                
                 Then she gets the merkle root of the smart contract's merkle tree: ${merkle_root}
-                \n
+                
                 She combines the merkle root with the backup privkey: ${combo_privkey}
-                \n
+                
                 Which corresponds to this pubkey: ${combo_pubkey}
-                \n
+                
                 Which corresponds to the smart contract: ${sc_address}
-                \n
+                
                 Alice therefore prepares her transaction: ${txhex}
-                \n
+                
                 Now go broadcast it
             `;
         }
@@ -563,21 +563,21 @@
             var txhex = tapscript.Tx.encode( tx ).hex;
             $( '.outcome' ).innerText = `
                 This is Bob's privkey: ${bobs_privkey}
-                \n
+                
                 Alice sends him her privkey: ${alices_privkey}
-                \n
+                
                 Bob combines it with his privkey to form the "backup privkey": ${backup_privkey}
-                \n
+                
                 Then he gets the merkle root of the smart contract's merkle tree: ${merkle_root}
-                \n
+                
                 He combines the merkle root with the backup privkey: ${combo_privkey}
-                \n
+                
                 Which corresponds to this pubkey: ${combo_pubkey}
-                \n
+                
                 Which corresponds to the smart contract: ${sc_address}
-                \n
+                
                 Bob therefore prepares his transaction: ${txhex}
-                \n
+                
                 Now go broadcast it
             `;
         }
@@ -615,21 +615,21 @@
             preimages.reverse();
             $( '.outcome' ).innerText = `
                 This is Alice's privkey: ${alices_privkey}
-                \n
+                
                 She gets 6 Yes preimages. The first: ${preimages[ 0 ]}
-                \n
+                
                 The second: ${preimages[ 1 ]}
-                \n
+                
                 The third: ${preimages[ 2 ]}
-                \n
+                
                 The fourth: ${preimages[ 3 ]}
-                \n
+                
                 The fifth: ${preimages[ 4 ]}
-                \n
+                
                 The sixth: ${preimages[ 5 ]}
-                \n
+                
                 Then Alice prepares her transaction: ${txhex}
-                \n
+                
                 Now go broadcast it
             `;
         }
@@ -667,21 +667,21 @@
             preimages.reverse();
             $( '.outcome' ).innerText = `
                 This is Bob's privkey: ${bobs_privkey}
-                \n
+                
                 He gets 6 Yes preimages. The first: ${preimages[ 0 ]}
-                \n
+                
                 The second: ${preimages[ 1 ]}
-                \n
+                
                 The third: ${preimages[ 2 ]}
-                \n
+                
                 The fourth: ${preimages[ 3 ]}
-                \n
+                
                 The fifth: ${preimages[ 4 ]}
-                \n
+                
                 The sixth: ${preimages[ 5 ]}
-                \n
+                
                 Then Bob prepares his transaction: ${txhex}
-                \n
+                
                 Now go broadcast it
             `;
         }
@@ -717,11 +717,11 @@
             var txhex = tapscript.Tx.encode( tx ).hex;
             $( '.outcome' ).innerText = `
                 This is Alice's privkey: ${alices_privkey}
-                \n
+                
                 She gets a Yes preimage. This one: ${preimage}
-                \n
+                
                 Then Alice prepares her transaction: ${txhex}
-                \n
+                
                 Now go broadcast it after enough time has elapsed
             `;
         }
@@ -757,11 +757,11 @@
             var txhex = tapscript.Tx.encode( tx ).hex;
             $( '.outcome' ).innerText = `
                 This is Bob's privkey: ${bobs_privkey}
-                \n
+                
                 He gets a No preimage. This one: ${preimage}
-                \n
+                
                 Then Bob prepares his transaction: ${txhex}
-                \n
+                
                 Now go broadcast it after enough time has elapsed
             `;
         }
@@ -769,7 +769,7 @@
             var txhex = fallback_oracle[ "state" ][ "backout_txhex" ];
             $( '.outcome' ).innerText = `
                 This is the backout tx: ${txhex}
-                \n
+                
                 Now go broadcast it after enough time has elapsed
             `;
         }
