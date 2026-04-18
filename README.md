@@ -18,4 +18,4 @@ Several things:
 - If all of the oracles went down, either party can wait a week plus 90 minutes and then divide up the funds 50/50 between one another
 
 # Why did you make this?
-I was talking to someone about developing an oracle-based application on bitcoin and he opined that it might be a pain to use oracles in a bitcoin context. I had him describe the oracle system he'd like to see for bitcoin, which was pretty similar to what I built here, and then I built it over the course of a few days. Now I'm putting it online so I can send him the link.
+I was talking to someone about developing an oracle-based application on bitcoin and he opined that it might be a pain to use oracles in a bitcoin context. I had him describe the oracle system he'd like to see for bitcoin, which was pretty similar to what I built here, and then I built it over the course of a few days. Now I'm putting it online so I can send him the link and get his feedback.
