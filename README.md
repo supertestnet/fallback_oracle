@@ -7,7 +7,7 @@ This is a webpage where you can create and execute a bitcoin smart contract with
 # How can I try it?
 Just click here and follow the instructions: https://supertestnet.github.io/fallback_oracle/
 
-# What is interesting about this oracle contract?
+# What is interesting about this smart contract?
 Several things:
 - The smart contract will be between two parties, Alice and Bob
 - They will be betting on the outcome of some future event
